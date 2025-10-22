@@ -3,19 +3,29 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import sharp from "sharp";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegPath from "ffmpeg-static";
+import ffmpegImport from "fluent-ffmpeg";
+import ffmpegStatic from "ffmpeg-static";
 import zlib from "zlib";
 import stream from "stream";
-import { ZstdCodec } from "zstd-codec";
+import ZstdCodec from "zstd-codec";
 
-ffmpeg.setFfmpegPath(ffmpegPath!);
+// Type definition for ffmpeg with setFfmpegPath method
+type FfmpegModule = typeof ffmpegImport & {
+  setFfmpegPath: (path: string) => void;
+};
+
+const ffmpeg = ffmpegImport as FfmpegModule;
+
+// Set ffmpeg path only if ffmpegStatic is a string
+if (typeof ffmpegStatic === "string") {
+  ffmpeg.setFfmpegPath(ffmpegStatic);
+}
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   const formData = await req.formData();
-  const file = formData.get("file") as File;
+  const file = formData.get("file") as File | null;
   const mode = (formData.get("mode") as "quality" | "max") || "quality";
 
   if (!file) {
@@ -37,7 +47,7 @@ export async function POST(req: Request) {
   let compressedBuffer: Buffer | null = null;
 
   try {
-    // 🖼️ IMAGE COMPRESSION
+    // IMAGE COMPRESSION
     if (type.startsWith("image/")) {
       const format = ext.replace(".", "");
       const transformer = sharp(buffer);
@@ -57,7 +67,7 @@ export async function POST(req: Request) {
       }
     }
 
-    // 🎞️ VIDEO or AUDIO COMPRESSION
+    // VIDEO or AUDIO COMPRESSION
     else if (type.startsWith("video/") || type.startsWith("audio/")) {
       const tmpDir = os.tmpdir();
       const tmpInput = path.join(tmpDir, `input${ext}`);
@@ -72,21 +82,24 @@ export async function POST(req: Request) {
 
       await new Promise<void>((resolve, reject) => {
         let command = ffmpeg(tmpInput).outputOptions([`-crf ${crf}`, `-preset ${preset}`]);
-        if (isAudio && bitrate) command = command.audioBitrate(bitrate);
+        if (isAudio && bitrate) {
+          command = command.audioBitrate(bitrate);
+        }
 
         command
-          .on("error", reject)
-          .on("end", resolve)
+          .on("error", (error: Error) => reject(error))
+          .on("end", () => resolve())
           .save(tmpOutput);
       });
 
       compressedBuffer = await fs.promises.readFile(tmpOutput);
 
+      // Clean up temp files
       fs.promises.unlink(tmpInput).catch(() => {});
       fs.promises.unlink(tmpOutput).catch(() => {});
     }
 
-    // 📄 TEXT / CODE / MARKUP FILES → Brotli compression
+    // TEXT / CODE / MARKUP FILES → Brotli compression
     else if (
       [
         "application/json",
@@ -103,6 +116,7 @@ export async function POST(req: Request) {
             [zlib.constants.BROTLI_PARAM_QUALITY]: mode === "max" ? 11 : 6,
           },
         });
+
         const chunks: Buffer[] = [];
         const input = new stream.Readable({
           read() {
@@ -110,15 +124,16 @@ export async function POST(req: Request) {
             this.push(null);
           },
         });
+
         input
           .pipe(brotli)
-          .on("data", (chunk) => chunks.push(chunk))
+          .on("data", (chunk: Buffer) => chunks.push(chunk))
           .on("end", () => resolve(Buffer.concat(chunks)))
-          .on("error", reject);
+          .on("error", (err: Error) => reject(err));
       });
     }
 
-    // 🗃️ OFFICE / PDF / ARCHIVE / OTHER BINARY FILES → Zstd
+    // OFFICE / PDF / ARCHIVE / OTHER BINARY FILES → Zstd
     else if (
       [
         "application/pdf",
@@ -133,8 +148,14 @@ export async function POST(req: Request) {
       officeExtensions.includes(ext)
     ) {
       compressedBuffer = await new Promise<Buffer>((resolve) => {
-        ZstdCodec.run((zstd) => {
-          const simple = new zstd.Simple();
+        ZstdCodec.run((zstd: unknown) => {
+          type CodecType = {
+            Simple: new () => {
+              compress: (input: Uint8Array, level: number) => Uint8Array;
+            };
+          };
+          const codec = zstd as CodecType;
+          const simple = new codec.Simple();
           const lvl = mode === "max" ? 20 : 3;
           const result = simple.compress(buffer, lvl);
           resolve(Buffer.from(result));
@@ -142,25 +163,34 @@ export async function POST(req: Request) {
       });
     }
 
-    // ❓ FALLBACK → generic Zstd
+    // FALLBACK → generic Zstd
     else {
       compressedBuffer = await new Promise<Buffer>((resolve) => {
-        ZstdCodec.run((zstd) => {
-          const simple = new zstd.Simple();
+        ZstdCodec.run((zstd: unknown) => {
+          type CodecType = {
+            Simple: new () => {
+              compress: (input: Uint8Array, level: number) => Uint8Array;
+            };
+          };
+          const codec = zstd as CodecType;
+          const simple = new codec.Simple();
           const result = simple.compress(buffer, 3);
           resolve(Buffer.from(result));
         });
       });
     }
 
-    // ✅ Return compressed file (same type)
-    return new NextResponse(compressedBuffer, {
+    // Return compressed file
+    if (!compressedBuffer) {
+      return NextResponse.json({ error: "Compression failed" }, { status: 500 });
+    }
+
+    return new NextResponse(new Uint8Array(compressedBuffer), {
       headers: {
         "Content-Type": type,
         "Content-Disposition": `attachment; filename="${file.name}"`,
       },
     });
-
   } catch (error) {
     console.error("Compression failed:", error);
     return NextResponse.json({ error: "Compression failed" }, { status: 500 });

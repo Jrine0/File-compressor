@@ -1,22 +1,34 @@
 import { NextResponse } from "next/server";
-import ffmpeg from "fluent-ffmpeg";
-import ffmpegPath from "ffmpeg-static";
+import ffmpegStatic from "ffmpeg-static";
+import ffmpegImport from "fluent-ffmpeg";
 
-ffmpeg.setFfmpegPath(ffmpegPath!);
+const ffmpeg = ffmpegImport as typeof import("fluent-ffmpeg") & {
+  setFfmpegPath?: (path: string) => void;
+};
+
+// Set ffmpeg path only if ffmpegStatic is a string
+if (ffmpeg.setFfmpegPath && typeof ffmpegStatic === "string") {
+  ffmpeg.setFfmpegPath(ffmpegStatic);
+}
 
 export const runtime = "nodejs";
 
 export async function GET() {
-  return new Promise<NextResponse>((resolve) => {
-    ffmpeg()
-      .addInput("dummy") // we just want version info, input ignored
-      .on("start", () => {}) // ignore start
-      .on("error", () => {}) // ignore errors
-      .ffprobe((err, data) => {
-        // fallback, just return the binary path as version
-        resolve(
-          NextResponse.json({ ffmpegPath, message: "FFmpeg is available" })
-        );
-      });
-  });
+  try {
+    // Verify ffmpeg path is set
+    const isAvailable = typeof ffmpegStatic === "string" && ffmpegStatic.length > 0;
+    
+    return NextResponse.json({ 
+      ffmpegPath: ffmpegStatic, 
+      message: isAvailable ? "FFmpeg is available" : "FFmpeg not found",
+      available: isAvailable
+    });
+  } catch (error) {
+    console.error("FFmpeg test failed:", error);
+    return NextResponse.json({ 
+      error: "FFmpeg test failed",
+      message: error instanceof Error ? error.message : "Unknown error",
+      available: false 
+    }, { status: 500 });
+  }
 }

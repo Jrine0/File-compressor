@@ -3,12 +3,19 @@ import path from "path";
 import { tmpdir } from "os";
 import formidable from "formidable";
 import type { NextApiRequest, NextApiResponse } from "next";
-import { default as ZstdCodecMod } from "zstd‑codec";  // adjust for import style
+import ZstdCodecMod from "zstd-codec";
 
 export const config = {
   api: {
     bodyParser: false,
   },
+};
+
+// Type definition for zstd codec
+type ZstdCodec = {
+  Simple: new () => {
+    compress: (input: Uint8Array, level: number) => Uint8Array;
+  };
 };
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
@@ -19,24 +26,26 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       res.status(500).json({ error: "Failed to parse file" });
       return;
     }
+
     const fileObj = Array.isArray(files.file) ? files.file[0] : files.file;
     if (!fileObj) {
       res.status(400).json({ error: "No file uploaded" });
       return;
     }
+
     const origPath = fileObj.filepath;
     const origName = fileObj.originalFilename || "file";
     const ext = path.extname(origName).toLowerCase();
 
-    // Optional: process embedded content, images/fonts etc.
+    // Optionally process embedded content (like images) to reduce size
     const processedPath = await processEmbeddedContent(origPath, ext);
-
     const rawBuffer = await fs.readFile(processedPath);
 
-    // run zstd codec
-    ZstdCodecMod.ZstdCodec.run((zstd: any) => {
-      const simple = new zstd.Simple();
-      const compressionLevel = 3;  // you can make this configurable
+    // Run zstd codec with proper typing
+    ZstdCodecMod.run((zstd: unknown) => {
+      const codec = zstd as ZstdCodec;
+      const simple = new codec.Simple();
+      const compressionLevel = 3; // Adjust compression level as needed (1-22)
       const compressedUint8 = simple.compress(new Uint8Array(rawBuffer), compressionLevel);
 
       res.setHeader("Content-Type", "application/octet-stream");
@@ -46,20 +55,18 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
   });
 }
 
-// Function to optionally reduce embedded content size
+// Function to optionally reduce embedded content size before compression
 async function processEmbeddedContent(filePath: string, ext: string): Promise<string> {
-  // For images: compress via sharp (for example)
   if ([".png", ".jpg", ".jpeg"].includes(ext)) {
     const sharp = (await import("sharp")).default;
     const output = path.join(tmpdir(), `proc_${Date.now()}${ext}`);
     await sharp(filePath)
-      .resize({ width: 1280 })        // scale down
-      .toFormat("jpeg", { quality: 70 })  // convert to jpeg, reduce quality
+      .resize({ width: 1280 }) // Scale down large images
+      .toFormat("jpeg", { quality: 70 }) // Convert to JPEG, reduce quality
       .toFile(output);
     return output;
   }
 
-  // For .docx, .pdf etc: you could add logic to strip heavy fonts/images.
-  // For now, return unchanged.
+  // For other file types, just return original path
   return filePath;
 }
