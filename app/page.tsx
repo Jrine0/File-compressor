@@ -1,103 +1,230 @@
-import Image from "next/image";
+"use client";
+import { useState, useRef, useCallback, useMemo } from "react";
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [file, setFile] = useState<File | null>(null);
+  const [compressed, setCompressed] = useState<string | null>(null);
+  const [compressionHistory, setCompressionHistory] = useState<
+    { name: string; url: string; size: number; type: string }[]
+  >([]);
+  const [loading, setLoading] = useState(false);
+  const [compressionMode, setCompressionMode] = useState<"quality" | "max">("quality");
+  const dropRef = useRef<HTMLDivElement>(null);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const droppedFile = e.dataTransfer.files?.[0];
+    if (droppedFile) setFile(droppedFile);
+  }, []);
+
+  const handleCompress = async () => {
+    if (!file) return;
+    setLoading(true);
+
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("mode", compressionMode);
+
+    const res = await fetch("/api/compress", {
+      method: "POST",
+      body: formData,
+    });
+
+    if (!res.ok) {
+      alert("Compression failed");
+      setLoading(false);
+      return;
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+
+    setCompressed(url);
+    setCompressionHistory((prev) => [
+      { name: file.name, url, size: blob.size, type: file.type },
+      ...prev,
+    ]);
+    setLoading(false);
+  };
+
+  const handleClear = () => {
+    setFile(null);
+    setCompressed(null);
+  };
+
+  const formatSize = (size: number) =>
+    size > 1024 * 1024
+      ? `${(size / (1024 * 1024)).toFixed(2)} MB`
+      : `${(size / 1024).toFixed(2)} KB`;
+
+  const estimatedSizes = useMemo(() => {
+    if (!file) return null;
+
+    const originalSize = file.size;
+    const type = file.type || "application/octet-stream";
+    const ext = file.name.split(".").pop()?.toLowerCase() || "";
+
+    const ratios: Record<string, { quality: number; max: number }> = {
+      image: { quality: 0.9, max: 0.5 },
+      video: { quality: 0.7, max: 0.4 },
+      audio: { quality: 0.8, max: 0.4 },
+      text: { quality: 0.7, max: 0.4 },
+      office: { quality: 0.85, max: 0.5 },
+      pdf: { quality: 0.85, max: 0.5 },
+      zip: { quality: 0.85, max: 0.5 },
+      other: { quality: 0.9, max: 0.6 },
+    };
+
+    let category = "other";
+    if (type.startsWith("image")) category = "image";
+    else if (type.startsWith("video")) category = "video";
+    else if (type.startsWith("audio")) category = "audio";
+    else if (type.startsWith("text") || type.includes("json") || type.includes("html") || type.includes("javascript"))
+      category = "text";
+    else if (["doc", "docx", "xls", "xlsx", "ppt", "pptx", "mdb", "accdb"].includes(ext)) category = "office";
+    else if (ext === "pdf") category = "pdf";
+    else if (ext === "zip") category = "zip";
+
+    const ratio = ratios[category] || ratios.other;
+
+    return {
+      highQuality: originalSize * ratio.quality,
+      maxCompression: originalSize * ratio.max,
+    };
+  }, [file]);
+
+  return (
+    <main className="min-h-screen bg-gray-950 text-white p-6 flex flex-col items-center pb-32">
+      <div
+        className={`w-full max-w-6xl flex-grow flex ${
+          file ? "flex-row" : "flex-col items-center justify-center"
+        } gap-8 transition-all duration-500`}
+      >
+        <div className={`flex flex-col items-center ${file ? "w-1/2" : "w-full"}`}>
+          {/* Dropzone */}
+          <div
+            className={`flex flex-col items-center justify-center bg-gray-800 rounded-lg p-6 ${
+              file ? "h-80" : "h-96"
+            } w-full border-4 border-dashed transition-all duration-500 cursor-pointer`}
+            ref={dropRef}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDrop}
+            onClick={() => document.getElementById("fileInput")?.click()}
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
+            <p className="text-xl text-center">{file ? file.name : "Drag & Drop File Here"}</p>
+            <p className="text-sm text-gray-400 mt-2">or click to select a file</p>
+            <input
+              id="fileInput"
+              type="file"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
             />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+          </div>
+
+          {/* Compression Mode Selector */}
+          <div className="flex items-center gap-4 mt-4">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="compressionMode"
+                value="quality"
+                checked={compressionMode === "quality"}
+                onChange={() => setCompressionMode("quality")}
+                className="accent-green-500"
+              />
+              High Quality
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="compressionMode"
+                value="max"
+                checked={compressionMode === "max"}
+                onChange={() => setCompressionMode("max")}
+                className="accent-red-500"
+              />
+              Maximum Compression
+            </label>
+          </div>
+
+          {/* Estimated Sizes */}
+          {estimatedSizes && (
+            <div className="mt-2 text-gray-300 text-sm text-center">
+              <p>Estimated Size (High Quality): {formatSize(estimatedSizes.highQuality)}</p>
+              <p>Estimated Size (Max Compression): {formatSize(estimatedSizes.maxCompression)}</p>
+            </div>
+          )}
+
+          {/* Compress Button */}
+          {file && (
+            <button
+              onClick={handleCompress}
+              disabled={loading}
+              className="mt-4 bg-blue-600 hover:bg-blue-500 py-2 px-6 rounded"
+            >
+              {loading ? "Compressing..." : "Compress File"}
+            </button>
+          )}
+
+          {/* Download Button */}
+          {compressed && (
+            <div className="mt-4 bg-blue-600 hover:bg-blue-500 py-2 px-6 rounded">
+              <a
+                href={compressed}
+                download={`compressed-${file?.name}`}
+                className="block text-center"
+              >
+                Download Compressed File
+              </a>
+            </div>
+          )}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
-    </div>
+
+        {/* File Info */}
+        {file && (
+          <div className="w-1/2 bg-gray-900 p-6 rounded-lg flex flex-col justify-between">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-2xl font-semibold">File Info</h2>
+              <button
+                onClick={handleClear}
+                className="text-sm bg-red-600 hover:bg-red-500 px-3 py-1 rounded"
+              >
+                Clear Page
+              </button>
+            </div>
+            <div className="space-y-3 text-sm text-gray-300">
+              <div><strong>File Name:</strong> {file.name}</div>
+              <div><strong>File Type:</strong> {file.type || "Unknown Type"}</div>
+              <div><strong>File Size:</strong> {formatSize(file.size)}</div>
+              <div>
+                <strong>Last Modified:</strong>{" "}
+                {file.lastModified ? new Date(file.lastModified).toLocaleString() : "N/A"}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Compression History */}
+      {compressionHistory.length > 0 && (
+        <div className="w-full max-w-6xl mt-12">
+          <h2 className="text-xl font-semibold mb-4">Previously Compressed Files</h2>
+          <div className="flex gap-4 overflow-x-auto pb-2">
+            {compressionHistory.map((item, idx) => (
+              <a
+                key={idx}
+                href={item.url}
+                download={`compressed-${item.name}`}
+                className="min-w-[200px] bg-gray-800 p-4 rounded hover:bg-gray-700 transition-all"
+              >
+                <div className="text-sm font-medium truncate">{item.name}</div>
+                <div className="text-xs text-gray-400 mt-1">{item.type || "Unknown"}</div>
+                <div className="text-xs text-gray-400">{formatSize(item.size)}</div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+    </main>
   );
 }
